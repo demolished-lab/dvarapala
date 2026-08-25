@@ -48,7 +48,10 @@ class Rule:
 
 
 class Policy:
-    def __init__(self, data: dict[str, Any]):
+    def __init__(self, data: dict[str, Any], *, source_path: str | None = None):
+        self.source_path = source_path
+        self._loaded_mtime = (
+            _mtime_of(source_path) if source_path else None)
         defaults = data.get("defaults", {})
         self.on_no_match: str = defaults.get("on_no_match", "default")
         if self.on_no_match not in VALID_EFFECTS | {"default"}:
@@ -74,6 +77,7 @@ class Policy:
     def load(cls, path: str | Path) -> Policy:
         path = Path(path)
         text = path.read_text(encoding="utf-8")
+        data: dict[str, Any]
         if path.suffix.lower() in {".yaml", ".yml"}:
             try:
                 import yaml  # type: ignore[import-untyped]
@@ -81,8 +85,26 @@ class Policy:
                 raise ImportError(
                     "install pyyaml to load YAML policies: "
                     "pip install dvarapala[yaml]") from exc
-            return cls(yaml.safe_load(text) or {})
-        return cls(json.loads(text))
+            data = yaml.safe_load(text) or {}
+        else:
+            data = json.loads(text)
+        return cls(data, source_path=str(path))
+
+    def maybe_reload(self) -> bool:
+        """Hot-reload from ``source_path`` when the file changed on disk.
+
+        Cheap (one stat call). Returns True when rules were reloaded.
+        """
+        if not self.source_path:
+            return False
+        mtime = _mtime_of(self.source_path)
+        if mtime is None or mtime == self._loaded_mtime:
+            return False
+        fresh = Policy.load(self.source_path)
+        self.on_no_match = fresh.on_no_match
+        self.rules = fresh.rules
+        self._loaded_mtime = mtime
+        return True
 
     def decide(self, intent: ActionIntent, risk: RiskLevel) -> Decision:
         for rule in self.rules:
@@ -90,6 +112,13 @@ class Policy:
                 return Decision(effect=rule.effect, rule_id=rule.id,
                                 message=rule.message)
         return Decision(effect=self.on_no_match)
+
+
+def _mtime_of(path: str | None) -> float | None:
+    try:
+        return Path(path).stat().st_mtime if path else None  # type: ignore[arg-type]
+    except OSError:
+        return None
 
 
 def _matches(rule: Rule, intent: ActionIntent, risk: RiskLevel) -> bool:

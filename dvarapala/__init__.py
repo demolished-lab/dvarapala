@@ -20,8 +20,10 @@ from .intent import (
     RiskLevel,
 )
 from .policy import Decision, Policy, Rule
+from .proxy import ProxySession
+from .redact import Redactor
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -40,6 +42,8 @@ __all__ = [
     "DenyAll",
     "Gate",
     "Policy",
+    "ProxySession",
+    "Redactor",
     "RiskLevel",
     "Rule",
     "resolve_confirmer",

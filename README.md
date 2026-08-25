@@ -64,7 +64,8 @@ the model retry something else.
 | Decorator for any sync/async function | `dvarapala.Gate` |
 | ASGI middleware for HTTP tool endpoints | `from dvarapala.middleware import ASGIGateMiddleware` |
 | MCP server tool handlers | `from dvarapala.mcp import gated_tool` |
-| CLI | `dvarapala verify audit.jsonl` · `dvarapala tail -n 20 audit.jsonl` |
+| MCP stdio proxy (any server, no code changes) | `dvarapala proxy -- <server command>` |
+| CLI | `dvarapala verify audit.jsonl` · `dvarapala tail -n 20 audit.jsonl` · `dvarapala anchor audit.jsonl` |
 
 ## Design rules
 
@@ -73,11 +74,58 @@ the model retry something else.
   unknown shell commands assess as MEDIUM; destructive tokens as CRITICAL.
 - **The log is evidence.** Chain verification is one command, no server needed.
 
+## Production hardening (v0.2)
+
+| Threat | Defense |
+|---|---|
+| Trailing entries deleted | **Chain anchoring** — every append updates a `<log>.head` sidecar; `verify()` compares the tip. `verify --strict` fails without a matching anchor. |
+| Log rewritten mid-history | SHA-256 chain breaks; the verifier names the first bad entry. |
+| Crash mid-write / torn lines | Unreadable lines **fail verification** instead of being skipped. `Gate(durable=True)` fsyncs every append. |
+| Two processes, one log | Advisory file locking (fcntl/msvcrt) + tip re-scan inside the lock — chains interleave correctly across processes. |
+| Secrets in the evidence file | `Gate(redact="secrets")` (default) scrubs API keys, bearer tokens, and JWTs from args, results, and errors at the audit boundary; `"strict"` adds emails and Luhn-checked cards; `None` disables. |
+| Runaway tools | Per-tool budgets: `tool_rate_limits={"deploy_*": (3, 3600)}` alongside the global rate limit. |
+| Consent amnesia after restart | `Gate(consent_store="path.json")` persists "always" approvals; `clear_all_consents()` wipes it. |
+| Policy edits require restarts | File policies hot-reload on mtime change; a broken edit keeps the last good rules running. |
+
+```bash
+dvarapala verify audit.jsonl          # chain integrity
+dvarapala verify --strict audit.jsonl # chain + anchor present and matching
+dvarapala anchor audit.jsonl          # re-anchor after intentional pruning
+```
+
+### MCP proxy: gate any server, zero code changes
+
+```bash
+dvarapala proxy --config policy.json --audit audit.jsonl -- node my-mcp-server.js
+```
+
+Point any MCP client at the proxy instead of the server:
+
+- every `tools/call` runs the full pipeline (policy → risk → consent →
+  audit); blocked calls get JSON-RPC `-32001` naming the rule that denied them;
+- policy-denied tools are stripped from `tools/list`, so the agent never sees
+  what it cannot call (`--no-hide-denied` to disable);
+- everything else passes through untouched.
+
+## EU AI Act / compliance mapping
+
+Audit records are shaped for the traceability questions regulators ask
+(EU AI Act Art. 12 record-keeping & integrity, Art. 14 oversight evidence,
+ISO/IEC 42001 monitoring, SOC 2 CC7.2–CC7.3):
+
+| Requirement | Where dvarapala provides it |
+|---|---|
+| Automatic event logging (Art. 12) | Every gate decision + execution outcome appended as structured JSONL |
+| Integrity / tamper evidence (Art. 12) | SHA-256 chain + anchored head; one-command verification, CI-friendly exit codes |
+| Traceability of decisions | Causal fields: `run_id`, `step`, `parent_step`, `context_refs`, `alternatives_considered` |
+| Human-oversight evidence (Art. 14) | Confirm-gated actions record consent level + reason on every approval |
+| Data minimization | Redaction at the audit boundary; argument snapshots truncated |
+
 ## Status
 
-v0.1.0 (alpha). The gate and audit core are stable; adapters and the
-failure-attribution layer (`why did step 24 fail because of step 6?`) are on
-the roadmap. MIT licensed. Contributions welcome.
+v0.2.0 (beta). Gate + anchored audit core are stable; the failure-attribution
+layer on top of the causal fields (`why did step 24 fail because of step 6?`)
+is on the roadmap. MIT licensed. Contributions welcome.
 
 ## Install
 
