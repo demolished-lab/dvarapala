@@ -140,3 +140,4 @@ pip install dvarapala[dev]     # + pytest/ruff
 MIT — see [LICENSE](LICENSE).
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/demolished-lab-dvarapala-18y99g?v=3f8d3a923c9228479639321feb1e38fc)](https://m8ven.ai/mcp/demolished-lab-dvarapala-18y99g?s=readme)
+[![M8ven Score](https://m8ven.ai/badge/mcp/demolished-lab-dvarapala-18y99g?v=4362311e4f45fbc072ad3fd51b89b67f)](https://m8ven.ai/mcp/demolished-lab-dvarapala-18y99g?s=readme)
