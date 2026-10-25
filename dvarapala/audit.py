@@ -198,8 +198,14 @@ class AuditLog:
             return False, (f"{malformed} unreadable/corrupt line(s); "
                            "log integrity compromised")
         if not records:
-            if strict and self.path and not self._read_anchor():
+            anchor = self._read_anchor() if self.path else None
+            if anchor and anchor.get("hash_self"):
+                return False, ("tail mismatch: anchored head exists but the "
+                               "audit log is empty (truncated)")
+            if strict and self.path and not anchor:
                 return False, "strict mode: no anchor found"
+            if strict and self.path and not anchor.get("hash_self"):
+                return False, "strict mode: anchor has no chain tip"
             return True, "empty audit log"
 
         for i, rec in enumerate(records):

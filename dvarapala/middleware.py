@@ -59,7 +59,7 @@ class ASGIGateMiddleware:
             diff_preview=body.decode("utf-8", errors="replace")[:512],
             risk_level=None,
         )
-        approved, record = self.gate.check(intent)
+        approved, record = await self.gate.check_async(intent)
         if not approved:
             payload = json.dumps({
                 "error": "denied_by_dvarapala",

@@ -75,6 +75,54 @@ def test_approved_request_passes_through_with_body():
     assert sent[0]["status"] == 200
 
 
+def test_async_confirmer_is_awaited_by_middleware():
+    from dvarapala import ApprovalResponse, ConsentLevel
+
+    class AsyncConfirmer:
+        async def confirm(self, request):
+            await asyncio.sleep(0)
+            return ApprovalResponse(True, ConsentLevel.ONCE, "approved")
+
+    app = App()
+    gate = Gate(confirmer=AsyncConfirmer(), policy={"rules": [
+        {"id": "confirm", "match": {"tool": "POST /api/tools/refund"},
+         "effect": "confirm"}]})
+    mw = ASGIGateMiddleware(app, gate)
+    sent = []
+
+    async def scenario():
+        await mw(make_scope(), make_receive(), lambda msg: list_send(sent, msg))
+
+    asyncio.run(scenario())
+
+    assert app.called
+    assert sent[0]["status"] == 200
+
+
+def test_async_confirmer_can_deny_request():
+    from dvarapala import ApprovalResponse, ConsentLevel
+
+    class AsyncConfirmer:
+        async def confirm(self, request):
+            await asyncio.sleep(0)
+            return ApprovalResponse(False, ConsentLevel.ONCE, "async denied")
+
+    app = App()
+    gate = Gate(confirmer=AsyncConfirmer(), policy={"rules": [
+        {"id": "confirm", "match": {"tool": "POST /api/tools/refund"},
+         "effect": "confirm"}]})
+    mw = ASGIGateMiddleware(app, gate)
+    sent = []
+
+    async def scenario():
+        await mw(make_scope(), make_receive(), lambda msg: list_send(sent, msg))
+
+    asyncio.run(scenario())
+
+    assert not app.called
+    assert sent[0]["status"] == 403
+
+
 def test_safe_methods_bypass_gate():
     app = App()
     gate = Gate(confirmer=DenyAll("gate must never see GET"))

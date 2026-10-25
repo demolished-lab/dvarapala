@@ -25,6 +25,18 @@ def test_truncated_tail_detected_when_anchored(tmp_path):
     assert "anchored head" in msg or "truncated" in msg
 
 
+def test_empty_anchored_log_is_detected_as_truncation(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    log.append(rec(0))
+    path.write_text("", encoding="utf-8")
+
+    for strict in (False, True):
+        ok, msg = AuditLog(path).verify(strict=strict)
+        assert not ok
+        assert "anchored" in msg or "truncated" in msg
+
+
 def test_tail_rewrite_detected_when_anchored(tmp_path):
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path)

@@ -39,7 +39,12 @@ _READ_PREFIXES = (
     "python --version", "node --version", "pip --version",
 )
 _SYSTEM_PATH_MARKERS = ("/etc/", "/usr/", "/boot/", "/windows/",
-                        "c:\\windows", "system32")
+                        "c:/windows", "system32")
+_SENSITIVE_WRITE_PATH_PARTS = frozenset({
+    ".ssh", ".aws", ".azure", ".kube", ".gnupg",
+    "authorized_keys", "id_rsa", "id_ed25519",
+    ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+})
 
 _EVASION_VARS = re.compile(r"\$\{?(ifs|path|shell)\}?")
 _WHITESPACE = re.compile(r"[\s]+")
@@ -100,6 +105,9 @@ def assess(intent: ActionIntent) -> RiskLevel:
     at = intent.action_type
 
     if at == ActionType.EXECUTE_COMMAND:
+        if (intent.details.get("command_truncated")
+                or intent.details.get("cmd_truncated")):
+            return RiskLevel.HIGH
         cmd = (intent.details.get("command")
                or intent.details.get("cmd") or "")
         return assess_command(str(cmd))
@@ -107,12 +115,22 @@ def assess(intent: ActionIntent) -> RiskLevel:
     if at == ActionType.WRITE_FILE:
         path = str(intent.details.get("path", ""))
         content = str(intent.details.get("content", ""))
-        lowered = path.lower()
+        content_length = intent.details.get("content_length", len(content))
+        try:
+            content_length = int(content_length)
+        except (TypeError, ValueError):
+            return RiskLevel.HIGH
+        lowered = path.lower().replace("\\", "/")
         if any(marker in lowered for marker in _SYSTEM_PATH_MARKERS):
             return RiskLevel.CRITICAL
-        if len(content) > 1000:
-            return RiskLevel.MEDIUM
-        return RiskLevel.LOW
+        path_parts = {part for part in lowered.split("/") if part}
+        if path_parts & _SENSITIVE_WRITE_PATH_PARTS:
+            return RiskLevel.HIGH
+        if content_length > 1000:
+            return RiskLevel.HIGH
+        # A write is not read-only: overwriting a short file can still change
+        # credentials, configuration, or application state. Require consent.
+        return RiskLevel.MEDIUM
 
     if at == ActionType.WEB_FETCH:
         return RiskLevel.LOW

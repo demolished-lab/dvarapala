@@ -42,6 +42,7 @@ class ProxySession:
         self.gate = gate
         self.hide_denied = hide_denied
         self._pending_tools_list: set[Any] = set()
+        self._pending_calls: dict[str, tuple[ActionIntent, Any]] = {}
         self._lock = threading.Lock()
 
     # ── client → server ────────────────────────────────────────
@@ -80,6 +81,8 @@ class ProxySession:
         )
         approved, record = self.gate.check(intent)
         if approved:
+            with self._lock:
+                self._pending_calls[self._id_key(msg.get("id"))] = (intent, record)
             return None
         payload = {
             "jsonrpc": "2.0",
@@ -100,13 +103,15 @@ class ProxySession:
 
     def on_server_line(self, line: str) -> str | None:
         """Returns the (possibly filtered) client-bound line, or None."""
-        if not self.hide_denied:
-            return line
         try:
             msg = json.loads(line)
             if not isinstance(msg, dict):
                 return line
         except json.JSONDecodeError:
+            return line
+
+        self._record_call_outcome(msg)
+        if not self.hide_denied:
             return line
 
         msg_id = msg.get("id")
@@ -121,6 +126,50 @@ class ProxySession:
                     if isinstance(t, dict) and not self._denied_tool(t)]
             result["tools"] = kept
         return json.dumps(msg) + "\n"
+
+    @staticmethod
+    def _id_key(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    def _record_call_outcome(self, msg: dict) -> None:
+        # Server-initiated requests also have IDs; only JSON-RPC responses
+        # correlated to an approved tools/call represent a tool outcome.
+        if "method" in msg or ("result" not in msg and "error" not in msg):
+            return
+        key = self._id_key(msg.get("id"))
+        with self._lock:
+            pending = self._pending_calls.pop(key, None)
+        if pending is None:
+            return
+
+        intent, record = pending
+        result = msg.get("result")
+        if "error" in msg:
+            event = "failed"
+            error = json.dumps(msg["error"], default=str)[:300]
+            state_delta = ""
+        elif isinstance(result, dict) and result.get("isError") is True:
+            event = "failed"
+            error = json.dumps(result, default=str)[:300]
+            state_delta = ""
+        elif "result" in msg:
+            event = "executed"
+            error = ""
+            state_delta = json.dumps(result, default=str)[:200]
+        else:
+            event = "failed"
+            error = "invalid JSON-RPC response: missing result or error"
+            state_delta = ""
+        self.gate._record_outcome(intent, record, event,
+                                  state_delta=state_delta, error=error)
+
+    def fail_pending(self, reason: str) -> None:
+        """Audit calls that never received a response before the server exited."""
+        with self._lock:
+            pending = list(self._pending_calls.values())
+            self._pending_calls.clear()
+        for intent, record in pending:
+            self.gate._record_outcome(intent, record, "failed", error=reason[:300])
 
     def _denied_tool(self, tool_def: dict) -> bool:
         probe = ActionIntent(
@@ -180,4 +229,7 @@ def serve(server_cmd: list[str], gate: Gate, *,
         except subprocess.TimeoutExpired:
             proc.kill()
             code = proc.wait()
+        pump.join(timeout=1)
+        session.fail_pending(
+            f"MCP server exited with status {code} before responding")
     return code

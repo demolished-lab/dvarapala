@@ -189,3 +189,49 @@ def test_read_tokens_need_exact_first_word():
     from dvarapala.intent import RiskLevel
     assert assess_command("cat file.txt") == RiskLevel.LOW
     assert assess_command("catchphrases about cats") == RiskLevel.MEDIUM
+
+
+def test_short_file_write_is_not_low_risk():
+    from dvarapala.intent import ActionIntent, ActionType, RiskLevel
+    from dvarapala.risk import assess
+
+    intent = ActionIntent(tool="write_file", action_type=ActionType.WRITE_FILE,
+                          details={"path": "notes.txt", "content": "x"})
+    assert assess(intent) == RiskLevel.MEDIUM
+
+
+def test_file_write_requires_consent_before_execution():
+    from dvarapala.intent import ActionType
+
+    gate = Gate(confirmer=DenyAll("writes require approval"))
+    write = gate(action_type=ActionType.WRITE_FILE)(
+        lambda path, content: "written")
+    with pytest.raises(Denied, match="writes require approval"):
+        write("notes.txt", "x")
+
+
+def test_sensitive_credential_file_write_requires_consent():
+    from dvarapala.intent import ActionIntent, ActionType, RiskLevel
+    from dvarapala.risk import assess
+
+    intent = ActionIntent(
+        tool="write_file", action_type=ActionType.WRITE_FILE,
+        details={"path": "~/.ssh/authorized_keys", "content": "ssh-ed25519 x"})
+    assert assess(intent) in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+
+    gate = Gate(confirmer=DenyAll("credential writes need approval"))
+    write = gate(action_type=ActionType.WRITE_FILE)(
+        lambda path, content: "written")
+    with pytest.raises(Denied, match="credential writes need approval"):
+        write("~/.ssh/authorized_keys", "ssh-ed25519 x")
+    assert gate.tail(1)[0].risk == "high"
+
+
+def test_decorated_shell_command_is_classified_before_execution():
+    from dvarapala.intent import ActionType
+
+    gate = Gate(confirmer=DenyAll("destructive command denied"))
+    run = gate(action_type=ActionType.EXECUTE_COMMAND)(lambda command: "ran")
+    with pytest.raises(Denied, match="destructive command denied"):
+        run("rm -rf /")
+    assert gate.tail(1)[0].risk == "critical"

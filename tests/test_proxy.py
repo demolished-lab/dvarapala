@@ -90,3 +90,61 @@ def test_denied_call_lands_in_audit_log(tmp_path):
     assert ok, msg
     events = [r.event for r in gate.tail(10)]
     assert "denied" in events
+
+
+def test_allowed_call_records_downstream_execution_outcome():
+    s = make_session()
+    gate = s.gate
+    req = json.dumps({"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                      "params": {"name": "read_file", "arguments": {}}})
+    assert s.on_client_line(req) is None
+    assert [r.event for r in gate.tail(10)] == ["allowed"]
+
+    response = json.dumps({"jsonrpc": "2.0", "id": 31,
+                           "result": {"content": [{"text": "ok"}]}})
+    assert s.on_server_line(response)
+    records = gate.tail(10)
+    assert [r.event for r in records] == ["allowed", "executed"]
+    assert "ok" in records[-1].state_delta
+
+
+def test_downstream_tool_error_records_failed_outcome():
+    s = make_session()
+    req = json.dumps({"jsonrpc": "2.0", "id": "call-1", "method": "tools/call",
+                      "params": {"name": "read_file", "arguments": {}}})
+    assert s.on_client_line(req) is None
+
+    response = json.dumps({"jsonrpc": "2.0", "id": "call-1",
+                           "error": {"code": -32603, "message": "backend failed"}})
+    s.on_server_line(response)
+    failed = [r for r in s.gate.tail(10) if r.event == "failed"]
+    assert len(failed) == 1
+    assert "backend failed" in failed[0].error
+
+
+def test_mcp_is_error_result_records_failed_outcome():
+    s = make_session()
+    req = json.dumps({"jsonrpc": "2.0", "id": 42, "method": "tools/call",
+                      "params": {"name": "read_file", "arguments": {}}})
+    assert s.on_client_line(req) is None
+
+    response = json.dumps({"jsonrpc": "2.0", "id": 42,
+                           "result": {"isError": True,
+                                      "content": [{"type": "text",
+                                                   "text": "tool failed"}]}})
+    s.on_server_line(response)
+    failed = [r for r in s.gate.tail(10) if r.event == "failed"]
+    assert len(failed) == 1
+    assert "tool failed" in failed[0].error
+
+
+def test_unanswered_call_is_failed_when_server_exits():
+    s = make_session()
+    req = json.dumps({"jsonrpc": "2.0", "id": 43, "method": "tools/call",
+                      "params": {"name": "read_file", "arguments": {}}})
+    assert s.on_client_line(req) is None
+
+    s.fail_pending("server exited before responding")
+    failed = [r for r in s.gate.tail(10) if r.event == "failed"]
+    assert len(failed) == 1
+    assert "server exited" in failed[0].error

@@ -111,8 +111,10 @@ def _snapshot(fn: Callable, args: tuple, kwargs: dict,
     """Capture call arguments compactly for the audit record."""
     try:
         bound = inspect.signature(fn).bind(*args, **kwargs)
-        items = [(str(k), v) for k, v in bound.arguments.items()]
+        bound_args = dict(bound.arguments)
+        items = [(str(k), v) for k, v in bound_args.items()]
     except (TypeError, ValueError):
+        bound_args = dict(kwargs)
         items = [("", v) for v in args] + list(kwargs.items())
 
     def short(v: Any) -> str:
@@ -122,7 +124,24 @@ def _snapshot(fn: Callable, args: tuple, kwargs: dict,
     snap = {k or f"arg{i}": short(v) for i, (k, v) in enumerate(items)}
     out = json.dumps(snap, default=str)
     # Redact at the audit boundary: secrets never reach disk.
-    return {"args": redactor.text(out[:1000])}
+    result: dict[str, Any] = {"args": redactor.text(out[:1000])}
+    kwargs_arg = bound_args.get("kwargs")
+    for name in ("command", "cmd", "path"):
+        value = bound_args.get(name)
+        if value is None and isinstance(kwargs_arg, dict):
+            value = kwargs_arg.get(name)
+        if value is not None:
+            text = str(value)
+            result[name] = text[:4096]
+            if len(text) > 4096:
+                result[f"{name}_truncated"] = True
+
+    content = bound_args.get("content")
+    if content is None and isinstance(kwargs_arg, dict):
+        content = kwargs_arg.get("content")
+    if content is not None:
+        result["content_length"] = len(str(content))
+    return result
 
 
 class Gate:
